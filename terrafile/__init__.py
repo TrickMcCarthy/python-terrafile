@@ -6,7 +6,6 @@ import subprocess
 import sys
 import yaml
 
-
 REGISTRY_BASE_URL = 'https://registry.terraform.io/v1/modules'
 GITHUB_DOWNLOAD_URL_RE = re.compile('https://[^/]+/repos/([^/]+)/([^/]+)/tarball/([^/]+)/.*')
 
@@ -58,11 +57,11 @@ def get_terrafile_path(path):
 def read_terrafile(path):
     try:
         with open(path) as open_file:
-            terrafile = yaml.load(open_file)
+            terrafile = yaml.safe_load(open_file)
         if not terrafile:
             raise ValueError('{} is empty'.format(path))
     except IOError as error:
-        sys.stderr.write('Error loading Terrafile: {}\n'.format(error.strerror))
+        sys.stderr.write('Error loading Terrafile: path {}\n'.format(error.strerror, path))
         sys.exit(1)
     except ValueError as error:
         sys.stderr.write('Error loading Terrafile: {}\n'.format(error))
@@ -90,16 +89,110 @@ def is_valid_registry_source(source):
         return False
 
 
-def update_modules(path):
+def find_used_modules(module_path):
+    regex = re.compile(r'"(\w+)"')
+    modules = []
+    sources = []
+    moduledict = {}
+    allResults = []
+    exclude = "modules"
+    for root, dirs, files in os.walk(module_path):
+      for file in files:
+        if file.endswith('.tf'):
+          allResults.append(os.path.join(root, file))
+    filteredResults = [filtered for filtered in allResults if not exclude in filtered ]
+    for file in filteredResults:
+        try:
+            modules += [re.findall('.*module\s*\"(.*)\".*',line)
+                for line in open(file)]
+            sources += [re.findall('.*source.*=.*\"(.*)\".*',line)
+                for line in open(file)]
+        except IOError as error:
+            sys.stderr.write('Error loading tf: {}\n'.format(error.strerror))
+            sys.exit(1)
+        except ValueError as error:
+            sys.stderr.write('Error reading tf: {}\n'.format(error))
+            sys.exit(1)
+
+    #Flatten out the lists
+    modules = [item for sublist in modules for item in sublist]
+    sources = [item for sublist in sources for item in sublist]
+    #merge lists into dict data structure
+    moduledict = dict(zip(modules,sources))
+    return moduledict
+
+
+def get_repo_name_from_url(url):
+    last_suffix_index = url.rfind(".git")
+    last_slash_index = url.rfind("/",0,last_suffix_index)
+    if last_suffix_index < 0:
+        last_suffix_index = len(url)
+
+    if last_slash_index < 0 or last_suffix_index <= last_slash_index:
+        raise Exception("Badly formatted url {}".format(url))
+
+    return url[last_slash_index + 1:last_suffix_index]
+
+
+def get_clone_target(repository_details, module_source, name):
+    if 'module_path' in repository_details.keys():
+        target = repository_details['module_path']
+    else:
+        last_suffix_index = module_source.rfind(name)
+        target =  module_source[0:last_suffix_index] + name
+
+    return target
+
+
+def clone_remote_git( source, target, module_path, name, version):
+    # add token to tthe source url if exists
+    if 'GITHUB_TOKEN' in os.environ:
+       source = self._add_github_token(source, os.getenv('GITHUB_TOKEN'))
+    # Delete the old directory and clone it from scratch.
+    print('Fetching {}/{}'.format(os.path.basename(os.path.abspath(module_path)), name))
+    shutil.rmtree(target, ignore_errors=True)
+    output, returncode = run('git', 'clone', '--branch={}'.format(version), source, target)
+    if returncode != 0:
+       sys.stderr.write(bytes.decode(output))
+       sys.exit(returncode)
+
+
+def remove_dups(dct):
+    reversed_dct = {}
+    for key, val in dct.items():
+        new_key = tuple(val["source"]) + tuple(val["version"]) + (tuple(val["module_path"]) if "module_path" in val else (None,) )
+        reversed_dct[new_key] = key
+    result_dct = {}
+    for key, val in reversed_dct.items():
+        result_dct[val] = dct[val]
+    return result_dct
+
+
+def filter_modules(terrafile,found_modules):
+    for key, val in terrafile.copy().items():
+        if key not in found_modules.keys():
+            del terrafile[key]
+
+    return remove_dups(terrafile)
+
+
+def update_modules(path, optimize_downloads):
     terrafile_path = get_terrafile_path(path)
     module_path = os.path.dirname(terrafile_path)
     module_path_name = os.path.basename(os.path.abspath(module_path))
 
     terrafile = read_terrafile(terrafile_path)
+    if optimize_downloads:                                 
+       found_modules = find_used_modules(os.getcwd())
+       terrafile = filter_modules(terrafile, found_modules)
+
 
     for name, repository_details in sorted(terrafile.items()):
         target = os.path.join(module_path, name)
         source = repository_details['source']
+        if optimize_downloads:
+            repo_name = get_repo_name_from_url(repository_details['source'])
+            target = get_clone_target(repository_details,found_modules[name],repo_name)
 
         # Support modules on the local filesystem.
         if source.startswith('./') or source.startswith('../') or source.startswith('/'):
@@ -124,13 +217,5 @@ def update_modules(path):
             print('Fetched {}/{}'.format(module_path_name, name))
             continue
 
-        # add token to tthe source url if exists
-        if 'GITHUB_TOKEN' in os.environ:
-            source = add_github_token(source, os.getenv('GITHUB_TOKEN'))
-        # Delete the old directory and clone it from scratch.
-        print('Fetching {}/{}'.format(module_path_name, name))
-        shutil.rmtree(target, ignore_errors=True)
-        output, returncode = run('git', 'clone', '--branch={}'.format(version), source, target)
-        if returncode != 0:
-            sys.stderr.write(bytes.decode(output))
-            sys.exit(returncode)
+        #standard clone of remote git repo
+        clone_remote_git(source, target, module_path, name, version)
