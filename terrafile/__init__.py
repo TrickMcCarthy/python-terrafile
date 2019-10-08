@@ -41,7 +41,53 @@ def add_github_token(github_download_url,token):
     return url
 
 
+def prevent_injection(input_variable):
+    if ';' in format(input_variable):
+        print("No semi colons allowed !!! input variable = {}".format(input_variables))
+        sys.exit(1) 
+
+
+def retrieve_tag_refs(l_refs, grep_version):
+    prevent_injection(grep_version)
+    remote_refs = {}
+    refs = set()
+    refs = ([t.decode('utf-8') for t in l_refs.split()])
+    grep_version = grep_version.replace('+','\d*')
+    grep_version = grep_version.replace('.','\.')
+    for ref in refs:
+        if ref is '':
+            break
+        hash_ref_list = ref.split('\t')
+        versionre = re.compile('refs/tags/({}.*$)'.format(grep_version))
+        m = versionre.match(hash_ref_list[0])
+        if m:
+            remote_refs[m.group(1)] = "found"
+            return m.group(1)
+
+    logger.info("Version {} doesn't exist in repo ".format(grep_version))
+    sys.exit(1)
+
+
+def conform_to_version_format(version, source, grep_version):
+    special_git_versions = ['master',' MASTER', 'HEAD', 'head']
+    version_prefix = "^[{}]+[\d.|\+]+[\+|-]*[\w]*$".format(grep_version)
+    if version not in special_git_versions and '+' in version:
+        pattern = re.compile("{}".format(version_prefix))
+        validVersionFormat = pattern.match(version)
+        if not validVersionFormat:
+            sys.stderr.write('version {} format isnt valid {}\n'.format(version,version_prefix))
+            sys.exit(1)
+        git_output ,returncode = run("/usr/bin/git", "ls-remote","--tags", "--sort=-v:refname", "--exit-code", "--refs", "{}".format(source))
+        if returncode != 0:
+            sys.stderr.write('problem with git ls-remote {}\n'.format(git_output))
+            sys.exit(1)
+        output = retrieve_tag_refs(git_output, version)
+        return output
+    return version
+
+
 def run(*args, **kwargs):
+    prevent_injection(args)
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
     stdout, stderr = proc.communicate()
     return (stdout, proc.returncode)
@@ -149,7 +195,7 @@ def clone_remote_git( source, target, module_path, name, version):
     if 'GITHUB_TOKEN' in os.environ:
        source = self._add_github_token(source, os.getenv('GITHUB_TOKEN'))
     # Delete the old directory and clone it from scratch.
-    print('Fetching {}/{}'.format(os.path.basename(os.path.abspath(module_path)), name))
+    print('Fetching {}/{} at version {}'.format(os.path.basename(os.path.abspath(module_path)), name, version))
     shutil.rmtree(target, ignore_errors=True)
     output, returncode = run('git', 'clone', '--branch={}'.format(version), source, target)
     if returncode != 0:
@@ -176,7 +222,7 @@ def filter_modules(terrafile,found_modules):
     return remove_dups(terrafile)
 
 
-def update_modules(path, optimize_downloads):
+def update_modules(path, optimize_downloads, grep_version):
     terrafile_path = get_terrafile_path(path)
     module_path = os.path.dirname(terrafile_path)
     module_path_name = os.path.basename(os.path.abspath(module_path))
@@ -204,7 +250,7 @@ def update_modules(path, optimize_downloads):
             continue
 
         version = repository_details['version']
-
+        version = conform_to_version_format(version, source, grep_version)
         # Support Terraform Registry sources.
         if is_valid_registry_source(source):
             print('Checking {}/{}'.format(module_path_name, name))

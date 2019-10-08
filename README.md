@@ -95,6 +95,19 @@ example:
 source: "https://github.com/joeblogs/example.git"
 version: "master"
 ```
+
+## Dynamic Version support
+Once you modularize your terraform modules and begin versioning them. The consuming terrafile repo, see environments example above often requires separate PR against it just to uptake the latest version. In non prod environments you might want to bypass this by utilizing dynamic versioning.
+You can use dynamic versioning to allow auto update, so instead of just having master as the version, you can provide tf1.+, or tf1.3.+ etc... to provide more flexibility.
+When might you require more flexibility:
+Often terraform is kept in a subfolder alondside the service source code, but it will be released on a different cadence, so it should have its own independent versioning. For example you may be using semantic versioning for your service code, v1.0,0, but you want to distinguish terraform changes using a different  prefix, for example tf1.0.0 In this way you can release terraform changes separately to service code changes. If you have pure terraform modules you can then use same prefix tfx.x.x
+Terraform versioning isn't quite the same as semantic versioning for application code. 
+First digit indicates manual changes that need to be applied,
+Second digit indicates a change that could be automatically applied(you may not have automatic system yet, but still use this critieria until you do)
+Third digit is for hotpatch fixes. You have something in production but you cannot rollback, or apply all the changes  in your module since, so you branch at production version and release a patch version.
+
+
+
  
 ## Local installation, useful for Testing (python 3)
 ```shell
